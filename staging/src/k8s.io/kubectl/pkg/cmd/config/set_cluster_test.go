@@ -19,6 +19,7 @@ package config
 import (
 	"bytes"
 	"os"
+	"strings"
 	"testing"
 
 	utiltesting "k8s.io/client-go/util/testing"
@@ -183,6 +184,52 @@ func TestModifyClusterServerAndTLS(t *testing.T) {
 	test.run(t)
 }
 
+func TestModifyClusterInsecureSkipTLSVerify(t *testing.T) {
+	tests := []struct {
+		name             string
+		startingInsecure bool
+		flags            []string
+		expectedInsecure bool
+	}{
+		{name: "server only keeps insecure", startingInsecure: true, flags: []string{"--server=https://192.168.0.99"}, expectedInsecure: true},
+		{name: "tls-server-name only keeps insecure", startingInsecure: true, flags: []string{"--tls-server-name=my-cluster-name"}, expectedInsecure: true},
+		{name: "proxy-url only keeps insecure", startingInsecure: true, flags: []string{"--proxy-url=http://127.0.0.1:8080"}, expectedInsecure: true},
+		{name: "explicit false clears insecure", startingInsecure: true, flags: []string{"--insecure-skip-tls-verify=false"}, expectedInsecure: false},
+		{name: "flag without value sets insecure", startingInsecure: false, flags: []string{"--insecure-skip-tls-verify"}, expectedInsecure: true},
+		{name: "server only keeps secure", startingInsecure: false, flags: []string{"--server=https://192.168.0.99"}, expectedInsecure: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			conf := clientcmdapi.Config{
+				Clusters: map[string]*clientcmdapi.Cluster{
+					"my-cluster": {Server: "https://192.168.0.1", InsecureSkipTLSVerify: tc.startingInsecure},
+				},
+			}
+			expectedCluster := conf.Clusters["my-cluster"].DeepCopy()
+			expectedCluster.InsecureSkipTLSVerify = tc.expectedInsecure
+			for _, flag := range tc.flags {
+				switch {
+				case strings.HasPrefix(flag, "--server="):
+					expectedCluster.Server = strings.TrimPrefix(flag, "--server=")
+				case strings.HasPrefix(flag, "--tls-server-name="):
+					expectedCluster.TLSServerName = strings.TrimPrefix(flag, "--tls-server-name=")
+				}
+			}
+			test := setClusterTest{
+				description: "Testing 'kubectl config set-cluster' " + tc.name,
+				config:      conf,
+				args:        []string{"my-cluster"},
+				flags:       tc.flags,
+				expected:    `Cluster "my-cluster" set.` + "\n",
+				expectedConfig: clientcmdapi.Config{
+					Clusters: map[string]*clientcmdapi.Cluster{"my-cluster": expectedCluster},
+				},
+			}
+			test.run(t)
+		})
+	}
+}
+
 func (test setClusterTest) run(t *testing.T) {
 	fakeKubeFile, err := os.CreateTemp(os.TempDir(), "")
 	if err != nil {
@@ -223,6 +270,9 @@ func (test setClusterTest) run(t *testing.T) {
 		}
 		if cluster.TLSServerName != test.expectedConfig.Clusters[test.args[0]].TLSServerName {
 			t.Errorf("Fail in %q\n expected cluster TLS server name %q\n but got %q\n ", test.description, test.expectedConfig.Clusters[test.args[0]].TLSServerName, cluster.TLSServerName)
+		}
+		if cluster.InsecureSkipTLSVerify != test.expectedConfig.Clusters[test.args[0]].InsecureSkipTLSVerify {
+			t.Errorf("Fail in %q\n expected cluster insecure-skip-tls-verify %v\n but got %v\n ", test.description, test.expectedConfig.Clusters[test.args[0]].InsecureSkipTLSVerify, cluster.InsecureSkipTLSVerify)
 		}
 	}
 }
