@@ -1010,6 +1010,49 @@ func TestOrderedbyInodes(t *testing.T) {
 	}
 }
 
+// TestOrderedbyInodesWithEphemeralStorageRequest verifies that an ephemeral-storage
+// request (bytes) is not subtracted from inode usage when ranking for inode pressure.
+func TestOrderedbyInodesWithEphemeralStorageRequest(t *testing.T) {
+	low := newPod("low", defaultPriority, []v1.Container{
+		newContainer("low", newResourceList("", "", ""), newResourceList("", "", "")),
+	}, []v1.Volume{
+		newVolume("local-volume", v1.VolumeSource{
+			EmptyDir: &v1.EmptyDirVolumeSource{},
+		}),
+	})
+	medium := newPod("medium", defaultPriority, []v1.Container{
+		newContainer("medium", newResourceList("", "", ""), newResourceList("", "", "")),
+	}, []v1.Volume{
+		newVolume("local-volume", v1.VolumeSource{
+			EmptyDir: &v1.EmptyDirVolumeSource{},
+		}),
+	})
+	high := newPod("high", defaultPriority, []v1.Container{
+		newContainer("high", newResourceList("", "", "1Gi"), newResourceList("", "", "")),
+	}, []v1.Volume{
+		newVolume("local-volume", v1.VolumeSource{
+			EmptyDir: &v1.EmptyDirVolumeSource{},
+		}),
+	})
+	stats := map[*v1.Pod]statsapi.PodStats{
+		low:    newPodInodeStats(low, resource.MustParse("500"), resource.MustParse("250"), resource.MustParse("250")),           // 1000
+		medium: newPodInodeStats(medium, resource.MustParse("5000"), resource.MustParse("2500"), resource.MustParse("2500")),     // 10000
+		high:   newPodInodeStats(high, resource.MustParse("200000"), resource.MustParse("100000"), resource.MustParse("200000")), // 500000
+	}
+	statsFn := func(pod *v1.Pod) (statsapi.PodStats, bool) {
+		result, found := stats[pod]
+		return result, found
+	}
+	pods := []*v1.Pod{low, medium, high}
+	orderedBy(disk(statsFn, []fsStatsType{fsStatsRoot, fsStatsLogs, fsStatsLocalVolumeSource}, resourceInodes)).Sort(pods)
+	expected := []*v1.Pod{high, medium, low}
+	for i := range expected {
+		if pods[i] != expected[i] {
+			t.Errorf("Expected pod[%d]: %s, but got: %s", i, expected[i].Name, pods[i].Name)
+		}
+	}
+}
+
 // TestOrderedByPriorityDisk ensures we order pods by priority and then greediest resource consumer
 func TestOrderedByPriorityDisk(t *testing.T) {
 	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.DRANodeAllocatableResources, true)
